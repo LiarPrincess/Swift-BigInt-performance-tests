@@ -240,7 +240,7 @@ def main():
     test_start_time = timeit.default_timer()
 
     for i in IMPLEMENTATIONS:
-        print(i.name)
+        print(i.name, '(may need to compile it first, so please wait…)')
         test_file = read_test_file(i)
         t_start_time = timeit.default_timer()
 
