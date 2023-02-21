@@ -8,6 +8,7 @@ from typing import List, Optional
 from subprocess import Popen, PIPE
 from dataclasses import dataclass
 from collections import defaultdict
+from pi_digits import calculate_pi_digits
 
 # You only need to configure those PATHs below.
 # You may also want to modify 'IMPLEMENTATIONS' to include only the ones you want.
@@ -35,16 +36,31 @@ OPTIONS_UNCHECKED = [
 ]
 
 PLATFORM = \
-    '🐧' if sys.platform == 'linux' else \
-    '🍎' if sys.platform == 'darwin' else \
-    '🪟'
+    '🐧 linux' if sys.platform == 'linux' else \
+    '🍎 mac' if sys.platform == 'darwin' else \
+    '🪟 windows'
 
-INCLUDE_STANDARD_DEVIATION = False
 
+# Select tests to run
+# Empty tuple = all tests
+EXECUTED_TESTS = (
+    # '_string_'
+    # '_equatable_', '_comparable_',
+    # '_unary_',
+    # '_add_', '_sub_',
+    # '_mul_',
+    # '_div_', '_mod_',
+    # '_and_', '_or_', '_xor_',
+    # '_shift',
+    # '_pi_',
+)
+
+SHOW_RELATIVE_STANDARD_DEVIATION = False
 
 # =======================
 # === Implementations ===
 # =======================
+
 
 @dataclass
 class Implementation:
@@ -56,7 +72,7 @@ class Implementation:
 
 
 SWIFT_NUMERICS = Implementation(
-    name=f'{PLATFORM} swift_numerics',
+    name=f'swift_numerics',
     path=SWIFT_NUMERICS_PATH,
     test_target_name='BigIntTests',
     test_file_relative_path='Tests/BigIntTests/Performance/PerformanceTests.generated.swift',
@@ -64,7 +80,7 @@ SWIFT_NUMERICS = Implementation(
 )
 
 VIOLET = Implementation(
-    name=f'{PLATFORM} Violet',
+    name=f'Violet',
     path=VIOLET_PATH,
     test_target_name='BigIntTests_swift_numerics',
     test_file_relative_path='Tests/BigIntTests-swift-numerics/Performance/PerformanceTests.generated.swift',
@@ -72,7 +88,7 @@ VIOLET = Implementation(
 )
 
 ATTASWIFT = Implementation(
-    name=f'{PLATFORM} attaswift',
+    name=f'attaswift',
     path=ATTASWIFT_PATH,
     test_target_name='PerformanceTests',
     test_file_relative_path='Tests/Performance/PerformanceTests.generated.swift',
@@ -145,6 +161,7 @@ def read_test_file(i: Implementation) -> TestFile:
 class TestResult:
     average: float
     standard_deviation: float
+    relative_standard_deviation: float
     values: List[float]
 
 
@@ -203,24 +220,26 @@ def run_test_case(i: Implementation, test_file: TestFile, test_name: str) -> Tes
 
         standard_deviation /= len(values)
         standard_deviation = math.sqrt(standard_deviation)
-        return TestResult(average, standard_deviation, values)
+        relative_standard_deviation = 0.0 if standard_deviation == 0.0 else standard_deviation * 100.0 / average
+        return TestResult(average, standard_deviation, relative_standard_deviation, values)
+
 
     print('--- stdout ---')
     print(stdout)
     print('--- stderr ---')
     print(stderr)
-    raise ValueError(f"Unable to stdout for: {test_file.class_name}.{test_name}")
+    raise ValueError(f"Unable to parse result for: {test_file.class_name}.{test_name}")
 
 
 # ============
 # === Main ===
 # ============
 
-def cell_value(average: float, standard_deviation: float, first: Optional[float]) -> str:
+def cell_value(average: float, relative_standard_deviation: float, first: Optional[float]) -> str:
     value = str(average)
 
-    if INCLUDE_STANDARD_DEVIATION and math.isfinite(standard_deviation):
-        value += f' [{standard_deviation:.4}σ]'
+    if SHOW_RELATIVE_STANDARD_DEVIATION and math.isfinite(relative_standard_deviation):
+        value += f' [±{relative_standard_deviation:.3}%]'
 
     if first is None:
         return value
@@ -245,17 +264,17 @@ def main():
         t_start_time = timeit.default_timer()
 
         for test_name in test_file.test_names:
-            # if 'string' in test_name or 'unary' in test_name:
-            print(f'  {test_name}')
-            r = run_test_case(i, test_file, test_name)
-            test_name_to_results[test_name].append(r)
+            if not EXECUTED_TESTS or any(map(lambda s: s in test_name, EXECUTED_TESTS)):
+                print(f'  {test_name}')
+                r = run_test_case(i, test_file, test_name)
+                test_name_to_results[test_name].append(r)
 
         i_end_time = timeit.default_timer()
-        print(f'  Total: {int(i_end_time - t_start_time)}s (includes compilation time)')
+        print(f'  Total: {int(i_end_time - t_start_time)}s (including compilation time)')
 
     print('Writing results file…')
     with open('results.md', 'w') as f:
-        names_line = '| |'
+        names_line = f'|{PLATFORM}|'
         separator_line = '|-|'
 
         for i in IMPLEMENTATIONS:
@@ -279,7 +298,7 @@ def main():
 
                     for (index, r) in enumerate(results):
                         first = None if index == 0 else results[0].average
-                        value = cell_value(r.average, r.standard_deviation, first)
+                        value = cell_value(r.average, r.relative_standard_deviation, first)
                         line += value + '|'
                         totals[index] += r.average
 
@@ -295,11 +314,35 @@ def main():
             f.write('\n')
 
         write_results(['_string_'])
+        write_results(['_equatable_', '_comparable_'])
         write_results(['_unary_'])
         write_results(['_add_', '_sub_'])
         write_results(['_mul_', '_div_', '_mod_'])
         write_results(['_and_', '_or_', '_xor_'])
         write_results(['_shift'])
+        write_results(['_pi_'])
+
+        f.write(f'Python {sys.version}\n')
+        f.write('\n')
+        f.write('|N|With print (same as Swift)|Without print|\n')
+        f.write('|-|--------------------------|-------------|\n')
+
+        print('  Running Python π tests')
+        PYTHON_PI_ITERATIONS = 3
+        for count in (500, 1_000, 5_000):
+            start = timeit.default_timer()
+            for _ in range(0, PYTHON_PI_ITERATIONS):
+                calculate_pi_digits(count, with_print=True)
+            with_time = timeit.default_timer() - start
+            with_average = with_time / PYTHON_PI_ITERATIONS
+
+            start = timeit.default_timer()
+            for _ in range(0, PYTHON_PI_ITERATIONS):
+                calculate_pi_digits(count, with_print=False)
+            without_time = timeit.default_timer() - start
+            without_average = without_time / PYTHON_PI_ITERATIONS
+
+            f.write(f'|{count}|{with_average:.4}s|{without_average:.4}s|\n')
 
     test_end_time = timeit.default_timer()
     print(f'Total: {int(test_end_time - test_start_time)}s')
