@@ -1,1 +1,5 @@
 __pycache__
+/multiple_grouped_by_test/*
+!/multiple_grouped_by_test/.gitignore
+/multiple_results/*
+!/multiple_results/.gitignore

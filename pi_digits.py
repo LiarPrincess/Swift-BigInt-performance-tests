@@ -1,8 +1,14 @@
+import sys
+import timeit
+
+REPEATS = 3
+
 # The Computer Language Benchmarks Game
 # http://benchmarksgame.alioth.debian.org/
 
 # transliterated from Mike Pall's Lua program
 # contributed by Mario Pernici
+
 
 def calculate_pi_digits(N: int, with_print: bool):
     '''
@@ -36,3 +42,24 @@ def calculate_pi_digits(N: int, with_print: bool):
                 a -= d*t
                 a *= 10
                 n *= 10
+
+
+def main():
+    if len(sys.argv) != 3:
+        print('Usage: pi_digits COUNT WITH_PRINT')
+        return
+
+    count = int(sys.argv[1])
+    with_print = sys.argv[2].lower() != 'false'
+    start = timeit.default_timer()
+
+    for _ in range(0, REPEATS):
+        calculate_pi_digits(count, with_print)
+
+    total = timeit.default_timer() - start
+    average = total / REPEATS
+    print(f'RESULT:', average)
+
+
+if __name__ == '__main__':
+    main()

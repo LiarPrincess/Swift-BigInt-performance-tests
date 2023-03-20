@@ -19,6 +19,9 @@ SWIFT_NUMERICS_PATH = '/mnt/Storage/Programming/swift-numerics'
 # Path to: https://github.com/LiarPrincess/Violet/tree/swift-numerics
 # Branch: swift-numerics
 VIOLET_PATH = '/mnt/Storage/Programming/Violet'
+# Path to: https://github.com/LiarPrincess/Violet-BigInt-XsProMax
+# Branch: main
+VIOLET_XS_PRO_MAX_PATH = '/mnt/Storage/Programming/BigIntXsProMax'
 # Path to: https://github.com/LiarPrincess/BigInt/tree/Performance-tests
 # Branch: Performance-tests
 ATTASWIFT_PATH = '/mnt/Storage/Programming/attaswift-bigint'
@@ -44,7 +47,7 @@ PLATFORM = \
 # Select tests to run
 # Empty tuple = all tests
 EXECUTED_TESTS = (
-    # '_string_'
+    # '_string_',
     # '_equatable_', '_comparable_',
     # '_unary_',
     # '_add_', '_sub_',
@@ -55,7 +58,9 @@ EXECUTED_TESTS = (
     # '_pi_',
 )
 
-SHOW_RELATIVE_STANDARD_DEVIATION = False
+# Color value green/red if the difference is greater than
+COLOR_PERCENTAGE = 5.0
+SHOW_RELATIVE_STANDARD_DEVIATION = True
 
 # =======================
 # === Implementations ===
@@ -87,6 +92,14 @@ VIOLET = Implementation(
     options=OPTIONS_RELEASE
 )
 
+VIOLET_XS_PRO_MAX = Implementation(
+    name=f'Violet XsProMax',
+    path=VIOLET_XS_PRO_MAX_PATH,
+    test_target_name='BigIntTests',
+    test_file_relative_path='Tests/Performance/PerformanceTests.generated.swift',
+    options=OPTIONS_RELEASE
+)
+
 ATTASWIFT = Implementation(
     name=f'attaswift',
     path=ATTASWIFT_PATH,
@@ -100,6 +113,7 @@ ATTASWIFT = Implementation(
 IMPLEMENTATIONS = (
     SWIFT_NUMERICS,
     VIOLET,
+    VIOLET_XS_PRO_MAX,
     ATTASWIFT,
 )
 
@@ -220,9 +234,8 @@ def run_test_case(i: Implementation, test_file: TestFile, test_name: str) -> Tes
 
         standard_deviation /= len(values)
         standard_deviation = math.sqrt(standard_deviation)
-        relative_standard_deviation = 0.0 if standard_deviation == 0.0 else standard_deviation * 100.0 / average
+        relative_standard_deviation = 0.0 if average == 0.0 else standard_deviation * 100.0 / average
         return TestResult(average, standard_deviation, relative_standard_deviation, values)
-
 
     print('--- stdout ---')
     print(stdout)
@@ -236,20 +249,23 @@ def run_test_case(i: Implementation, test_file: TestFile, test_name: str) -> Tes
 # ============
 
 def cell_value(average: float, relative_standard_deviation: float, first: Optional[float]) -> str:
-    value = str(average)
+    value = f'{average:.6}'
 
     if SHOW_RELATIVE_STANDARD_DEVIATION and math.isfinite(relative_standard_deviation):
-        value += f' [±{relative_standard_deviation:.3}%]'
+        emoji = '⚠️' if relative_standard_deviation > 5.0 else ''
+        value += f' [±{relative_standard_deviation:.3}%{emoji}]'
 
     if first is None:
         return value
 
     to_first = 0.0 if average == 0 else first / average
+    green_color_threshold = 1.0 + COLOR_PERCENTAGE / 100.0
+    red_color_threshold = 1.0 - COLOR_PERCENTAGE / 100.0
     value += f' ({to_first:.3}x)'
 
     return \
-        f'<span style="color:#39a275">{value}</span>' if to_first > 1.1 else \
-        f'<span style="color:#df1c44">{value}</span>' if to_first < 0.9 else \
+        f'<span style="color:#39a275">{value}</span>' if to_first > green_color_threshold else \
+        f'<span style="color:#df1c44">{value}</span>' if to_first < red_color_threshold else \
         value
 
 
@@ -322,26 +338,42 @@ def main():
         write_results(['_shift'])
         write_results(['_pi_'])
 
-        f.write(f'Python {sys.version}\n')
-        f.write('\n')
-        f.write('|N|With print (same as Swift)|Without print|\n')
-        f.write('|-|--------------------------|-------------|\n')
+        def run_python_pi(count: int, *, with_print: bool) -> float:
+            'Returns average'
 
-        print('  Running Python π tests')
-        PYTHON_PI_ITERATIONS = 3
+            command = f'python3 pi_digits.py {count} {with_print}'
+            args = shlex.split(command)
+            process = Popen(args, stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+            return_code = process.poll()
+
+            if return_code != 0:
+                print('--- stdout ---')
+                print(stdout)
+                print('--- stderr ---')
+                print(stderr)
+                raise ValueError(f"Return code {return_code} from '{command}'")
+
+            stdout = str(stdout, 'utf-8')
+            for line in stdout.splitlines():
+                if line.startswith('RESULT:'):
+                    _, result_string = line.split(':')
+                    result_string = result_string.strip()
+                    return float(result_string)
+
+            raise ValueError(f"Unable to parse result of: '{command}'")
+
+        has_pi = any(map(lambda n: '_pi_' in n, test_name_to_results))
+        if has_pi:
+            print('  Running Python π tests')
+            f.write(f'Python {sys.version}\n')
+            f.write('\n')
+            f.write('|N|With print (same as Swift)|Without print|\n')
+            f.write('|-|--------------------------|-------------|\n')
+
         for count in (500, 1_000, 5_000):
-            start = timeit.default_timer()
-            for _ in range(0, PYTHON_PI_ITERATIONS):
-                calculate_pi_digits(count, with_print=True)
-            with_time = timeit.default_timer() - start
-            with_average = with_time / PYTHON_PI_ITERATIONS
-
-            start = timeit.default_timer()
-            for _ in range(0, PYTHON_PI_ITERATIONS):
-                calculate_pi_digits(count, with_print=False)
-            without_time = timeit.default_timer() - start
-            without_average = without_time / PYTHON_PI_ITERATIONS
-
+            with_average = run_python_pi(count, with_print=True)
+            without_average = run_python_pi(count, with_print=False)
             f.write(f'|{count}|{with_average:.4}s|{without_average:.4}s|\n')
 
     test_end_time = timeit.default_timer()

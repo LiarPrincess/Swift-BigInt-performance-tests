@@ -4,7 +4,16 @@ This project runs performance tests for `BigInt` implementations from:
 - `swift_numerics` - [this branch](https://github.com/LiarPrincess/swift-numerics/tree/13-Performance)
 - `Violet` - [this branch](https://github.com/LiarPrincess/Violet/tree/swift-numerics) which is a `main` branch with all `swift_numerics` tests from all PRs
   - optimized for `Int32` range. In this tests only `0`, `-1` and `1` fall into this range, so it should not matter.
+- `Violet XsProMax` - [this branch](https://github.com/LiarPrincess/Violet-BigInt-XsProMax). Violet implementation with following changes:
+  - no small inlined integer - magnitude is always stored on the heap
+  - no restrictions on the size - `isNegative` is stored in-line (and not on the heap like in Violet); `count` and `capacity` are on the heap because I don't want to stray too much from `Violet`.
 - `attaswift` - [this branch](https://github.com/LiarPrincess/BigInt/tree/Performance-tests) which is a `main` branch with added performance tests
+
+## Content
+
+- `__main__.py` - main script to run tests; most of the time you will use this
+- `multiple_run.py` - run tests multiple times in a loop; useful to combat random relative standard deviation spikes
+- `multiple_group_by_test.py` - process results from `multiple_run.py`, so that they are grouped by test (instead of per run)
 
 ## How to read the results
 
@@ -16,7 +25,7 @@ Values in parens mean relative performance improvement vs the 1st implementation
 
 Means that `Violet` is 20.9 times faster than `swift_numerics` and `attaswift` is 9.3 times faster.
 
-If you want you can also set `INCLUDE_STANDARD_DEVIATION = True` inside the script.
+If you want you can also set `SHOW_RELATIVE_STANDARD_DEVIATION = True` inside the script.
 
 ## How to run
 
