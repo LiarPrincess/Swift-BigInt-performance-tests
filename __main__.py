@@ -1,383 +1,143 @@
-import re
-import sys
-import math
-import shlex
-import timeit
-import os.path
-from typing import List, Optional
-from subprocess import Popen, PIPE
-from dataclasses import dataclass
-from collections import defaultdict
-from pi_digits import calculate_pi_digits
-
-# You only need to configure those PATHs below.
-# You may also want to modify 'IMPLEMENTATIONS' to include only the ones you want.
-
-# Path to: https://github.com/LiarPrincess/swift-numerics/tree/13-Performance
-# Branch: 13-Performance
-SWIFT_NUMERICS_PATH = '/mnt/Storage/Programming/swift-numerics'
-# Path to: https://github.com/LiarPrincess/Violet/tree/swift-numerics
-# Branch: swift-numerics
-VIOLET_PATH = '/mnt/Storage/Programming/Violet'
-# Path to: https://github.com/LiarPrincess/Violet-BigInt-XsProMax
-# Branch: main
-VIOLET_XS_PRO_MAX_PATH = '/mnt/Storage/Programming/BigIntXsProMax'
-# Path to: https://github.com/LiarPrincess/BigInt/tree/Performance-tests
-# Branch: Performance-tests
-ATTASWIFT_PATH = '/mnt/Storage/Programming/attaswift-bigint'
-
-OPTIONS_DEBUG = []
-OPTIONS_RELEASE = [
-    '--configuration', 'release',
-    '-Xswiftc', '-gnone',  # Don't emit debug info
-    '-Xswiftc', '-O',  # Compile with optimizations
-]
-OPTIONS_UNCHECKED = [
-    '--configuration', 'release',
-    '-Xswiftc', '-gnone',  # Don't emit debug info
-    '-Xswiftc', '-Ounchecked',  # Compile with optimizations and remove runtime safety checks
-]
-
-PLATFORM = \
-    '🐧 linux' if sys.platform == 'linux' else \
-    '🍎 mac' if sys.platform == 'darwin' else \
-    '🪟 windows'
+from io import TextIOWrapper
 
 
-# Select tests to run
-# Empty tuple = all tests
-EXECUTED_TESTS = (
-    # '_string_',
-    # '_equatable_', '_comparable_',
-    # '_unary_',
-    # '_add_', '_sub_',
-    # '_mul_',
-    # '_div_', '_mod_',
-    # '_and_', '_or_', '_xor_',
-    # '_shift',
-    # '_pi_',
-)
+def raw_input_group_by_operation():
+    with open('operations.txt', 'r') as f:
+        inits = []
+        adds = []
+        subs = []
+        muls = []
+        divs = []
+        greater_thans = []
 
-# Color value green/red if the difference is greater than
-COLOR_PERCENTAGE = 5.0
-SHOW_RELATIVE_STANDARD_DEVIATION = True
-
-# =======================
-# === Implementations ===
-# =======================
-
-
-@dataclass
-class Implementation:
-    name: str
-    path: str
-    test_target_name: str  # Replace '-' with '_', otherwise 'swift test' fails
-    test_file_relative_path: str
-    options: List[str]
-
-
-SWIFT_NUMERICS = Implementation(
-    name=f'swift_numerics',
-    path=SWIFT_NUMERICS_PATH,
-    test_target_name='BigIntTests',
-    test_file_relative_path='Tests/BigIntTests/Performance/PerformanceTests.generated.swift',
-    options=OPTIONS_RELEASE
-)
-
-VIOLET = Implementation(
-    name=f'Violet',
-    path=VIOLET_PATH,
-    test_target_name='BigIntTests_swift_numerics',
-    test_file_relative_path='Tests/BigIntTests-swift-numerics/Performance/PerformanceTests.generated.swift',
-    options=OPTIONS_RELEASE
-)
-
-VIOLET_XS_PRO_MAX = Implementation(
-    name=f'Violet XsProMax',
-    path=VIOLET_XS_PRO_MAX_PATH,
-    test_target_name='BigIntTests',
-    test_file_relative_path='Tests/Performance/PerformanceTests.generated.swift',
-    options=OPTIONS_RELEASE
-)
-
-ATTASWIFT = Implementation(
-    name=f'attaswift',
-    path=ATTASWIFT_PATH,
-    test_target_name='PerformanceTests',
-    test_file_relative_path='Tests/Performance/PerformanceTests.generated.swift',
-    options=OPTIONS_RELEASE
-)
-
-# 1st entry is a reference implementation,
-# all of the others will be compared with it.
-IMPLEMENTATIONS = (
-    SWIFT_NUMERICS,
-    VIOLET,
-    VIOLET_XS_PRO_MAX,
-    ATTASWIFT,
-)
-
-
-# =================
-# === Test file ===
-# =================
-
-@dataclass
-class TestFile:
-    path: str
-    class_name: str
-    test_names: List[str]
-
-
-def read_test_file(i: Implementation) -> TestFile:
-    class_name = None
-    test_names = []
-    path = os.path.join(i.path, i.test_file_relative_path)
-
-    with open(path, 'r') as f:
         for line in f:
             line = line.strip()
-            if not line:
+
+            if not line or ':' in line:  # pi digits
                 continue
 
-            if line.startswith('class') and 'XCTestCase' in line:
-                if class_name is not None:
-                    raise ValueError(f'Multiple test classes in: {path}')
+            if line.startswith('init'):
+                inits.append(line + '\n')
+            elif line.startswith('add'):
+                adds.append(line + '\n')
+            elif line.startswith('sub'):
+                subs.append(line + '\n')
+            elif line.startswith('mul'):
+                muls.append(line + '\n')
+            elif line.startswith('div'):
+                divs.append(line + '\n')
+            elif line.startswith('greater_than'):
+                greater_thans.append(line + '\n')
+            else:
+                raise ValueError(f"Unknown operation '{line}'")
 
-                try:
-                    colon_index = line.index(':')
-                    class_name = line[5:colon_index].strip()
-                except ValueError:
-                    raise ValueError(f"Unable to parse '{line}' test class name in: {path}")
-
-            elif line.startswith('func test'):
-                try:
-                    brace_index = line.index('(')
-                    name = line[4:brace_index].strip()
-                    test_names.append(name)
-                except ValueError:
-                    raise ValueError(f"Unable to parse '{line}' test name in: {path}")
-
-    if class_name is None:
-        raise ValueError(f'Unable to find test class name in: {path}')
-
-    if not test_names:
-        raise ValueError(f'Unable to find tests in: {path}')
-
-    return TestFile(path, class_name, test_names)
-
-
-# ================
-# === Run test ===
-# ================
-
-@dataclass
-class TestResult:
-    average: float
-    standard_deviation: float
-    relative_standard_deviation: float
-    values: List[float]
+    with open('init.txt', 'w') as f:
+        f.writelines(inits)
+    with open('add.txt', 'w') as f:
+        f.writelines(adds)
+    with open('sub.txt', 'w') as f:
+        f.writelines(subs)
+    with open('mul.txt', 'w') as f:
+        f.writelines(muls)
+    with open('div.txt', 'w') as f:
+        f.writelines(divs)
+    with open('greater_than.txt', 'w') as f:
+        f.writelines(greater_thans)
 
 
-TEST_RESULT_LINE_REGEX = re.compile('average: (\\d+\\.\\d+(?:e-\\d+)?).*values: \\[(.*)\\]', re.IGNORECASE)
+ROW_GROUP = 200
+COL_GROUP = 200
+CAPACITY = 5000
 
 
-def run_test_case(i: Implementation, test_file: TestFile, test_name: str) -> TestResult:
-    command = (
-        'swift',
-        'test',
-        '--package-path', f'"{i.path}"',
-        '--filter', f'{i.test_target_name}.{test_file.class_name}/{test_name}',
-        '--enable-test-discovery',
-        '-Xswiftc', '-DPERFORMANCE_TEST',
-        *i.options
-    )
+def print_table(out: TextIOWrapper, file: str):
+    lhs_max = 0
+    rhs_max = 0
+    lhs_to_rhs_to_count: list[list[int]] = [([0] * CAPACITY) for _ in range(0, CAPACITY)]
 
-    command = ' '.join(command)
-    args = shlex.split(command)
-    process = Popen(args, stdout=PIPE, stderr=PIPE)
-    stdout, stderr = process.communicate()
-    return_code = process.poll()
+    with open(file, 'r') as f:
+        for line in f:
+            line = line.strip()
 
-    stdout = str(stdout, 'utf-8')
-    stderr = str(stderr, 'utf-8')
+            if line:
+                op, lhs_count, rhs_count = line.split('|')
+                lhs_count = int(lhs_count)
+                rhs_count = int(rhs_count)
 
-    if return_code != 0:
-        print('--- stdout ---')
-        print(stdout)
-        print('--- stderr ---')
-        print(stderr)
-        raise ValueError(f"Return code {return_code} for: {test_file.class_name}.{test_name}")
+                lhs_max = max(lhs_max, lhs_count)
+                rhs_max = max(rhs_max, rhs_count)
+                lhs_to_rhs_to_count[lhs_count][rhs_count] += 1
 
-    # Test results are in:
-    # - 'stdout' on Linux
-    # - 'stderr' on mac
-    out = stdout + '\n' + stderr
+    row_count = lhs_max // ROW_GROUP + 1
+    column_count = rhs_max // COL_GROUP + 1
 
-    for line in out.splitlines():
-        r = TEST_RESULT_LINE_REGEX.search(line)
-        if r is None:
-            continue
+    # Header
+    out.write('|lhs/rhs|')
+    for i in range(0, column_count):
+        start = i * COL_GROUP
+        end = start + COL_GROUP
+        out.write(f'{start}|')
+    out.write('\n')
+    out.write('|-|')
+    for i in range(0, column_count):
+        out.write(f'-|')
+    out.write('\n')
 
-        average_group = r.group(1)
-        average = float(average_group)
+    # Rows
+    for l in range(0, row_count):
+        lhs_start = l * ROW_GROUP
+        lhs_end = lhs_start + ROW_GROUP
+        out.write(f'|{lhs_start}|')
 
-        values_group = r.group(2)
-        values: list[float] = []
-        standard_deviation = 0.0
+        for r in range(0, column_count):
+            rhs_start = r * COL_GROUP
+            rhs_end = rhs_start + COL_GROUP
 
-        for s in values_group.split(','):
-            s = s.replace('seconds', '').strip()
-            f = float(s)
-            standard_deviation += pow(f - average, 2)
-            values.append(f)
+            count = 0
+            for ll in range(lhs_start, lhs_end):
+                for rr in range(rhs_start, rhs_end):
+                    count += lhs_to_rhs_to_count[ll][rr]
 
-        standard_deviation /= len(values)
-        standard_deviation = math.sqrt(standard_deviation)
-        relative_standard_deviation = 0.0 if average == 0.0 else standard_deviation * 100.0 / average
-        return TestResult(average, standard_deviation, relative_standard_deviation, values)
+            out.write(f'{count}|')
+        out.write('\n')
 
-    print('--- stdout ---')
-    print(stdout)
-    print('--- stderr ---')
-    print(stderr)
-    raise ValueError(f"Unable to parse result for: {test_file.class_name}.{test_name}")
-
-
-# ============
-# === Main ===
-# ============
-
-def cell_value(average: float, relative_standard_deviation: float, first: Optional[float]) -> str:
-    value = f'{average:.6}'
-
-    if SHOW_RELATIVE_STANDARD_DEVIATION and math.isfinite(relative_standard_deviation):
-        emoji = '⚠️' if relative_standard_deviation > 5.0 else ''
-        value += f' [±{relative_standard_deviation:.3}%{emoji}]'
-
-    if first is None:
-        return value
-
-    to_first = 0.0 if average == 0 else first / average
-    green_color_threshold = 1.0 + COLOR_PERCENTAGE / 100.0
-    red_color_threshold = 1.0 - COLOR_PERCENTAGE / 100.0
-    value += f' ({to_first:.3}x)'
-
-    return \
-        f'<span style="color:#39a275">{value}</span>' if to_first > green_color_threshold else \
-        f'<span style="color:#df1c44">{value}</span>' if to_first < red_color_threshold else \
-        value
+    out.write('\n')
+    out.write('\n')
 
 
 def main():
-    assert len(IMPLEMENTATIONS), 'No implementations to test?'
-    test_name_to_results: defaultdict[str, list[TestResult]] = defaultdict(lambda: [])
-    test_start_time = timeit.default_timer()
+    raw_input_group_by_operation()
 
-    for i in IMPLEMENTATIONS:
-        print(i.name, '(may need to compile it first, so please wait…)')
-        test_file = read_test_file(i)
-        t_start_time = timeit.default_timer()
+    with open(f'result.md', 'w') as f:
+        def print_header(s: str):
+            f.write('# ')
+            f.write(s)
+            f.write('\n\n')
 
-        for test_name in test_file.test_names:
-            if not EXECUTED_TESTS or any(map(lambda s: s in test_name, EXECUTED_TESTS)):
-                print(f'  {test_name}')
-                r = run_test_case(i, test_file, test_name)
-                test_name_to_results[test_name].append(r)
+        f.write(f'''\
+- row - number of words (`UInt64` in magnitude) in `lhs`
+- column - number of words in `rhs`
+- value - number of operations where:
+  - `lhs` word count was between `row` and `row+{ROW_GROUP}`
+  - `rhs` word count was between `column` and `column+{COL_GROUP}`
 
-        i_end_time = timeit.default_timer()
-        print(f'  Total: {int(i_end_time - t_start_time)}s (including compilation time)')
+''')
 
-    print('Writing results file…')
-    with open('results.md', 'w') as f:
-        names_line = f'|{PLATFORM}|'
-        separator_line = '|-|'
+        print_header('Add')
+        print_table(f, 'add.txt')
 
-        for i in IMPLEMENTATIONS:
-            names_line += i.name + '|'
-            separator_line += (len(i.name) * '-') + '|'
+        print_header('Sub')
+        print_table(f, 'sub.txt')
 
-        def write_results(filters: List[str]):
-            f.write('# ' + ', '.join(filters).replace('_', '') + '\n')
-            f.write('\n')
-            f.write(names_line + '\n')
-            f.write(separator_line + '\n')
+        print_header('Mul')
+        f.write('`rhs` is always a single word\n\n')
+        print_table(f, 'mul.txt')
 
-            totals = [0.0] * len(IMPLEMENTATIONS)
+        print_header('Div')
+        print_table(f, 'div.txt')
 
-            for test_name in test_name_to_results:
-                is_accepted = any(map(lambda f: f in test_name, filters))
-                if is_accepted:
-                    line = '|' + test_name + '|'
-                    results = test_name_to_results[test_name]
-                    assert len(results) == len(IMPLEMENTATIONS), f"'{test_name}' was not run in all implementations?"
-
-                    for (index, r) in enumerate(results):
-                        first = None if index == 0 else results[0].average
-                        value = cell_value(r.average, r.relative_standard_deviation, first)
-                        line += value + '|'
-                        totals[index] += r.average
-
-                    f.write(line + '\n')
-
-            total_line = '|TOTAL|'
-            for index, t in enumerate(totals):
-                first = None if index == 0 else totals[0]
-                value = cell_value(t, float('nan'), first)
-                total_line += value + '|'
-
-            f.write(total_line + '\n')
-            f.write('\n')
-
-        write_results(['_string_'])
-        write_results(['_equatable_', '_comparable_'])
-        write_results(['_unary_'])
-        write_results(['_add_', '_sub_'])
-        write_results(['_mul_', '_div_', '_mod_'])
-        write_results(['_and_', '_or_', '_xor_'])
-        write_results(['_shift'])
-        write_results(['_pi_'])
-
-        def run_python_pi(count: int, *, with_print: bool) -> float:
-            'Returns average'
-
-            command = f'python3 pi_digits.py {count} {with_print}'
-            args = shlex.split(command)
-            process = Popen(args, stdout=PIPE, stderr=PIPE)
-            stdout, stderr = process.communicate()
-            return_code = process.poll()
-
-            if return_code != 0:
-                print('--- stdout ---')
-                print(stdout)
-                print('--- stderr ---')
-                print(stderr)
-                raise ValueError(f"Return code {return_code} from '{command}'")
-
-            stdout = str(stdout, 'utf-8')
-            for line in stdout.splitlines():
-                if line.startswith('RESULT:'):
-                    _, result_string = line.split(':')
-                    result_string = result_string.strip()
-                    return float(result_string)
-
-            raise ValueError(f"Unable to parse result of: '{command}'")
-
-        has_pi = any(map(lambda n: '_pi_' in n, test_name_to_results))
-        if has_pi:
-            print('  Running Python π tests')
-            f.write(f'Python {sys.version}\n')
-            f.write('\n')
-            f.write('|N|With print (same as Swift)|Without print|\n')
-            f.write('|-|--------------------------|-------------|\n')
-
-        for count in (500, 1_000, 5_000):
-            with_average = run_python_pi(count, with_print=True)
-            without_average = run_python_pi(count, with_print=False)
-            f.write(f'|{count}|{with_average:.4}s|{without_average:.4}s|\n')
-
-    test_end_time = timeit.default_timer()
-    print(f'Total: {int(test_end_time - test_start_time)}s')
+        print_header('Greater than (>)')
+        print_table(f, 'greater_than.txt')
 
 
 if __name__ == '__main__':
